@@ -51,10 +51,14 @@ class Action(Enum):
     is the cost of performing the action.
     """
 
-    WEST = (0, -1, 1)
-    EAST = (0, 1, 1)
-    NORTH = (-1, 0, 1)
-    SOUTH = (1, 0, 1)
+    WEST =      (0, -1, 1)
+    EAST =      (0, 1, 1)
+    NORTH =     (-1, 0, 1)
+    SOUTH =     (1, 0, 1)
+    NORTHEAST = (-1, 1, 1.414)
+    NORTHWEST = (-1, -1, 1.414)
+    SOUTHEAST = (1, 1, 1.414)
+    SOUTHWEST = (1, -1, 1.414)
 
     @property
     def cost(self):
@@ -84,6 +88,14 @@ def valid_actions(grid, current_node):
         valid_actions.remove(Action.WEST)
     if y + 1 > m or grid[x, y + 1] == 1:
         valid_actions.remove(Action.EAST)
+    if (x - 1 < 0 and y - 1 < 0) or grid[x - 1, y - 1] == 1:
+        valid_actions.remove(Action.NORTHWEST)
+    if (x - 1 < 0 and y + 1 > m) or grid[x - 1, y + 1] == 1:
+        valid_actions.remove(Action.NORTHEAST)
+    if (x + 1 > n and y - 1 < 0) or grid[x + 1, y - 1] == 1:
+        valid_actions.remove(Action.SOUTHWEST)
+    if (x + 1 > n and y + 1 > m) or grid[x + 1, y + 1] ==1:
+        valid_actions.remove(Action.SOUTHEAST)
 
     return valid_actions
 
@@ -135,12 +147,12 @@ def a_star(grid, h, start, goal):
         path.append(branch[n][1])
     else:
         print('**********************')
-        print('Failed to find a path!')
+        print('Failed to find a path! Your goal might be an obstacle!')
+        print('Run the file again!')
         print('**********************') 
     return path[::-1], path_cost
 
 
-
+#Euclidean distance
 def heuristic(position, goal_position):
-    return np.linalg.norm(np.array(position) - np.array(goal_position))
-
+    return np.sqrt((position[0] - goal_position[0])**2 + (position[1] - goal_position[1])**2)

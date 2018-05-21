@@ -9,8 +9,11 @@ from planning_utils import a_star, heuristic, create_grid
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
-from udacidrone.frame_utils import global_to_local
+from udacidrone.frame_utils import global_to_local, local_to_global
 import utm
+import matplotlib.pyplot as plt
+
+
 class States(Enum):
     MANUAL = auto()
     ARMING = auto()
@@ -44,7 +47,7 @@ class MotionPlanning(Drone):
             if -1.0 * self.local_position[2] > 0.95 * self.target_position[2]:
                 self.waypoint_transition()
         elif self.flight_state == States.WAYPOINT:
-            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 2:
+            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 1.0:
                 if len(self.waypoints) > 0:
                     self.waypoint_transition()
                 else:
@@ -109,44 +112,43 @@ class MotionPlanning(Drone):
         print("Sending waypoints to simulator ...")
         data = msgpack.dumps(self.waypoints)
         self.connection._master.write(data)
+
+
+    def point(self,p):
+        return np.array([p[0], p[1], 1.]).reshape(1, -1)
+
+    def collinearity_check(self,p1, p2, p3, epsilon=1e-6):   
+        m = np.concatenate((p1, p2, p3), 0)
+        det = np.linalg.det(m)
+        return abs(det) < epsilon
+
         
     def prune_path(self,path):
-        def point(p):
-            return np.array([p[0], p[1], 1.]).reshape(1, -1)
-
-        def collinearity_check(p1, p2, p3, epsilon=0.1):
-            m = np.concatenate((p1, p2, p3), 0)
-            det = np.linalg.det(m)
-            return abs(det) < epsilon
-        pruned_path = []
-        # TODO: prune the path!
-        p1 = path[0]
-        p2 = path[1]
-        pruned_path.append(p1)
-        for i in range(2,len(path)):
-            p3 = path[i]
-            if collinearity_check(point(p1),point(p2),point(p3)):
-                p2 = p3
-            else:
-                pruned_path.append(p2)
-                p1 = p2
-                p2 = p3
-        pruned_path.append(p3)
-
+        if path is not None:
+            pruned_path = [p for p in path]
+            # TODO: prune the path!
+            i = 0
+            while i < len(pruned_path)-2:
+                p1 = self.point(pruned_path[i])
+                p2 = self.point(pruned_path[i + 1])
+                p3 = self.point(pruned_path[i + 2])
+                if self.collinearity_check(p1,p2,p3):
+                    pruned_path.remove(pruned_path[i+1])
+                else:
+                    i = i + 1
+        else:
+            pruned_path = path
 
         return pruned_path
 
     def plan_path(self):
         self.flight_state = States.PLANNING
         print("Searching for a path ...")
-        TARGET_ALTITUDE = 10
-        SAFETY_DISTANCE = 7
-
-        args = parser.parse_args()
+        TARGET_ALTITUDE = 5
+        SAFETY_DISTANCE = 5
 
         self.target_position[2] = TARGET_ALTITUDE
 
-        # TODO: read lat0, lon0 from colliders into floating point values
         # TODO: read lat0, lon0 from colliders into floating point values
         file = open('colliders.csv', 'r')
 
@@ -157,72 +159,84 @@ class MotionPlanning(Drone):
         lat0 = lat0.strip('lat0 ')
         
         lon0 = lon0.strip('lon0 ')
-        # TODO: set home position to (lat0, lon0, 0)
+    
+
+        # TODO: set home position to (lon0, lat0, 0)
         self.set_home_position(lon0, lat0, 0)
+        
         # TODO: retrieve current global position
-        global_position = self.global_position
-
+        global_position = [self._latitude, self._longitude, self._altitude]
+        
         # TODO: convert to current local position using global_to_local()
-        current_local_pos = global_to_local(self.global_position,self.global_home)
-        print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
-                                                                         self.local_position))
-        print('current local position {0}'.format(current_local_pos))
-        data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=3)
+        local_position = global_to_local(self.global_position,self.global_home)
+        
+        print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,self.local_position))
+                                                                         
         # Read in obstacle map
-
+        data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
+        
         # Define a grid for a particular altitude and safety margin around obstacles
         grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
+        
+        print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
+        
         # Define starting point on the grid (this is just grid center)
-        print("north offset, east offset",north_offset,east_offset)
-        grid_start = (-north_offset, -east_offset)
+        grid_start = (int(local_position[0]-north_offset), int(local_position[1]-east_offset))
         # TODO: convert start position to current position rather than map center
-        start = (int(current_local_pos[0]-north_offset), int(current_local_pos[1]-east_offset))
+        
+        # Set goal as some arbitrary position on the grid and check if that position is an obstacle,
+        #if not, assign that position as the random goal
 
-        # Set goal as some arbitrary position on the grid
-        grid_goal = (-int(north_offset) + 75, -int(east_offset) + 130)
+       # Set goal as some arbitrary position on the grid
+        # example: grid_goal = (-north_offset + 10, -east_offset + 10)
+        # Done: adapt to set goal as latitude / longitude position and convert
+        goalPossible = False
+        while not goalPossible:
+            random_number = 300
+            random_goal_coordinate = local_to_global([local_position[0]+np.random.uniform(-random_number, random_number),
+                            local_position[1]+np.random.uniform(-random_number, random_number),
+                            0.0], self.global_home)
+            # goal_coordinate = [lat,lon,up]
+            goal_coordinate = random_goal_coordinate
+            goal_position = global_to_local(goal_coordinate, self.global_home)
+
+            grid_goal = (int(goal_position[0])-north_offset, int(goal_position[1])-east_offset)
+            goalPossible = grid[grid_goal[0]][grid_goal[1]] != 1
+        
+        print('global goal position {}'.format(goal_position))
         # TODO: adapt to set goal as latitude / longitude position and convert
-        # 37.7955 -122.3937
-         #(longitude = -122.402224, latitude = 37.797330)
-        # grid_goal = global_to_local((-122.401247,37.796738,0),self.global_home)
-        # lon0, lat0, 0
-        # grid_goal = global_to_local((lon0,lat0,0),self.global_home)
-
-        if args.lat != 1000 and args.lon != 1000:
-            lat_goal = args.lat
-            lon_goal = args.lon
-            grid_goal = global_to_local((lon_goal,lat_goal,0),self.global_home)
-        else:
-            print("Default Goal Location")
-            grid_goal = global_to_local((-122.401247,37.796738,0),self.global_home)
-
-        print("grid_goal",grid_goal)
-        grid_goal = (int(grid_goal[0]-north_offset),int(grid_goal[1]-east_offset))
-        # grid_goal = (int(current_local_pos[0]+north_offset+10), int(current_local_pos[1]+east_offset+10))
 
         # Run A* to find a path from start to goal
         # TODO: add diagonal motions with a cost of sqrt(2) to your A* implementation
         # or move to a different search space such as a graph (not done here)
+        print('Local Start and Goal: ', grid_start, grid_goal)
+        path, _ = a_star(grid, heuristic, grid_start, grid_goal)
+
+        #Plot the grid map
+        plt.rcParams['figure.figsize'] = 12, 12
+        plt.imshow(grid, cmap='Greys', origin='lower')
+        plt.xlabel('East')
+        plt.ylabel('North')
+        green_start = plt.plot(grid_start[1], grid_start[0], 'go', markersize=10)
+        red_end = plt.plot(grid_goal[1], grid_goal[0], 'ro', markersize=10)
+        if path is not None:
+            pp = np.array(path)
+            plt.plot(pp[:, 1], pp[:, 0], 'b')
+        plt.legend([green_start, red_end], ["Start", "End"])
+        plt.show()
 
 
-        print('Local Start and Goal: ', start, grid_goal)
-        path, _ = a_star(grid, heuristic, start, grid_goal)
-        # # print(path)
-        # # TODO: prune path to minimize number of waypoints
-        # # TODO (if you're feeling ambitious): Try a different approach altogether!
-        #
+        # TODO: prune path to minimize number of waypoints
+        # TODO (if you're feeling ambitious): Try a different approach altogether!
+        pruned_path = self.prune_path(path)
+        print("pruned path",pruned_path)
+
         # Convert path to waypoints
-        pruned = self.prune_path(path)
-        print("pruned path",pruned)
-
-        waypoints = [[p[0] + int(north_offset), p[1] + int(east_offset),
-            TARGET_ALTITUDE,0] for p in pruned]
+        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
+        # Set self.waypoints
         self.waypoints = waypoints
-        print("waypoints",waypoints)
-
-        # TODO: send waypoints to sim
+        # TODO: send waypoints to sim (this is just for visualization of waypoints)
         self.send_waypoints()
-
-    
 
     def start(self):
         self.start_log("Logs", "NavLog.txt")
@@ -241,12 +255,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
-    parser.add_argument('--lat', type=float, default=1000, help="latitude")
-    parser.add_argument('--lon', type=float, default=1000, help="latitude")
-
     args = parser.parse_args()
 
-    conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port),timeout=40)
+    conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
     drone = MotionPlanning(conn)
     time.sleep(1)
 
